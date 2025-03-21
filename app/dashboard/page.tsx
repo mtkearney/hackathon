@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import Button from '@/components/ui/Button';
+import ProjectCreationCard from '@/components/dashboard/ProjectCreationCard';
 
 export default async function Dashboard() {
   return (
@@ -11,14 +12,7 @@ export default async function Dashboard() {
         </Link>
       </div>
       
-      <div className="bg-white shadow overflow-hidden sm:rounded-md">
-        <div className="p-12 text-center text-gray-500">
-          <p className="text-lg mb-4">You don't have any projects yet.</p>
-          <Link href="/dashboard/new-project">
-            <Button variant="primary">Create your first project</Button>
-          </Link>
-        </div>
-      </div>
+      <ProjectCreationCard />
     </div>
   );
 } 

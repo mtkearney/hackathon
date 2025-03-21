@@ -1,11 +1,11 @@
-import { createServerClient } from '@supabase/auth-helpers-nextjs';
+import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-import { Database } from '@/types/supabase';
+import type { Database } from '@/types/supabase';
 
 export function createServerSupabaseClient() {
   const cookieStore = cookies();
   
-  return createServerClient<Database>(
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -14,10 +14,25 @@ export function createServerSupabaseClient() {
           return cookieStore.get(name)?.value;
         },
         set(name, value, options) {
-          cookieStore.set({ name, value, ...options });
+          cookieStore.set({
+            name,
+            value,
+            path: '/',
+            sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production',
+            ...options
+          });
         },
         remove(name, options) {
-          cookieStore.set({ name, value: '', ...options });
+          cookieStore.set({
+            name,
+            value: '',
+            path: '/',
+            sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production',
+            ...options,
+            maxAge: 0
+          });
         },
       },
     }
