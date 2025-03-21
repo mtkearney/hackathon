@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAppStructureGenerator } from '../../lib/hooks/useLLM';
+import { generateSchemaFromSummary } from '@/lib/llm';
 
 interface Field {
   name: string;
@@ -70,6 +71,8 @@ export default function SchemaConfig({
   const [aiRecommendations, setAIRecommendations] = useState<GeneratedSchema | null>(null);
   const [isLoadingRecommendations, setIsLoadingRecommendations] = useState(true);
   const [appSummary, setAppSummary] = useState<string>('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
   
   // App Structure generation
   const { loading: appStructureLoading, error: appStructureError, execute: generateAppStructure } = useAppStructureGenerator();
@@ -264,9 +267,88 @@ export default function SchemaConfig({
     return schema.tables.some(table => table.name.toLowerCase() === tableName.toLowerCase());
   };
 
+  // Function to generate schema from project summary
+  const generateSchemaFromSummaryHandler = async () => {
+    if (!appSummary?.trim()) {
+      // Can't generate without a summary
+      setGenerationError('A project summary is required to generate the schema.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setGenerationError(null);
+
+    try {
+      // Call the API route instead of the LLM function directly
+      const response = await fetch('/api/llm/generate-schema', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ summary: appSummary }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to generate schema');
+      }
+      
+      const generatedSchema = await response.json();
+      
+      // Convert generated schema to our format
+      const convertedSchema = {
+        tables: generatedSchema.tables.map(table => ({
+          name: table.name,
+          description: table.description,
+          fields: table.fields.map(field => ({
+            name: field.name,
+            type: field.type,
+            description: field.description,
+            required: field.required,
+            relations: field.relations || ''
+          }))
+        }))
+      };
+
+      // Update schema with generated data
+      onSchemaChange(convertedSchema);
+      
+      // Store the generated schema for other components
+      localStorage.setItem('generatedSchema', JSON.stringify(generatedSchema));
+      
+      // If we have recommendations, show them in a toast or similar UI element
+      if (generatedSchema.recommendations) {
+        console.log('Schema generation recommendations:', generatedSchema.recommendations);
+        // TODO: Display recommendations to user
+      }
+    } catch (error) {
+      console.error('Error generating schema:', error);
+      setGenerationError(typeof error === 'object' && error !== null && 'message' in error
+        ? error.message as string
+        : 'Failed to generate schema. Please try again or adjust your project summary.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   return (
-    <div className="max-w-3xl mx-auto bg-white rounded-lg shadow-md p-6 transition-all">
-      <h2 className="text-2xl font-semibold mb-4">Schema & Tables Configuration</h2>
+    <div className="max-w-5xl mx-auto bg-white rounded-lg shadow-md p-6 transition-all">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-semibold">Database Schema Configuration</h2>
+        <button
+          onClick={generateSchemaFromSummaryHandler}
+          disabled={isGenerating}
+          className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isGenerating ? 'Generating...' : 'Generate Schema'}
+        </button>
+      </div>
+      
+      {generationError && (
+        <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded">
+          {generationError}
+        </div>
+      )}
       
       {isLoadingRecommendations ? (
         <div className="flex items-center justify-center py-4">

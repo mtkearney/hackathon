@@ -60,3 +60,7 @@ export function useAppStructureGenerator() {
 export function useTechStackGenerator() {
   return useLLM<any>({ endpoint: 'tech-stack' });
 }
+
+export function useFeatureTreeGenerator() {
+  return useLLM<any>({ endpoint: 'feature-tree' });
+}

@@ -7,6 +7,7 @@ export function useSupabase() {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     // Get initial session
@@ -17,6 +18,7 @@ export function useSupabase() {
         
         if (error) {
           console.error('Error getting session:', error);
+          setError(error);
         }
         
         console.log('Session retrieved:', session ? 'Session exists' : 'No session');
@@ -24,6 +26,7 @@ export function useSupabase() {
         setUser(session?.user ?? null);
       } catch (error) {
         console.error('Unexpected error during getSession:', error);
+        setError(error instanceof Error ? error : new Error(String(error)));
       } finally {
         setLoading(false);
       }
@@ -55,45 +58,88 @@ export function useSupabase() {
   }, [supabase]);
 
   const signIn = async (options: any) => {
-    const { error } = await supabase.auth.signInWithPassword(options);
-    
-    if (error) {
-      console.error('Sign in error:', error);
-      throw error;
+    try {
+      const { error } = await supabase.auth.signInWithPassword(options);
+      
+      if (error) {
+        console.error('Sign in error:', error);
+        setError(error);
+        throw error;
+      }
+      
+      // Perform a full page reload after login to ensure middleware processes the new session
+      window.location.href = '/dashboard';
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
-    
-    // Perform a full page reload after login to ensure middleware processes the new session
-    window.location.href = '/dashboard';
   };
 
   const signInWithProvider = async (provider: 'google' | 'github' | 'facebook') => {
-    // Get the current URL to use as a redirect URL
-    const redirectTo = `${window.location.origin}/auth/callback`;
-    
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: {
-        redirectTo
+    try {
+      // Get the current URL to use as a redirect URL
+      const redirectTo = `${window.location.origin}/auth/callback`;
+      
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo
+        }
+      });
+      
+      if (error) {
+        console.error(`Sign in with ${provider} error:`, error);
+        setError(error);
+        throw error;
       }
-    });
-    
-    if (error) {
-      console.error(`Sign in with ${provider} error:`, error);
-      throw error;
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
   };
 
   const signOut = async () => {
-    console.log('Signing out');
-    const { error } = await supabase.auth.signOut();
-    
-    if (error) {
-      console.error('Sign out error:', error);
-      throw error;
+    try {
+      console.log('Signing out');
+      const { error } = await supabase.auth.signOut();
+      
+      if (error) {
+        console.error('Sign out error:', error);
+        setError(error);
+        throw error;
+      }
+      
+      // Perform a full page reload after logout to ensure middleware processes the session change
+      window.location.href = '/login';
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+      throw err;
     }
-    
-    // Perform a full page reload after logout to ensure middleware processes the session change
-    window.location.href = '/login';
+  };
+
+  // Add refreshSession function
+  const refreshSession = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase.auth.refreshSession();
+      
+      if (error) {
+        console.error('Session refresh error:', error);
+        setError(error);
+        return { session: null };
+      }
+      
+      setSession(data.session);
+      setUser(data.session?.user ?? null);
+      
+      return data;
+    } catch (err) {
+      console.error('Unexpected error during session refresh:', err);
+      setError(err instanceof Error ? err : new Error(String(err)));
+      return { session: null };
+    } finally {
+      setLoading(false);
+    }
   };
 
   return {
@@ -101,8 +147,10 @@ export function useSupabase() {
     user,
     session,
     loading,
+    error,
     signIn,
     signInWithProvider,
-    signOut
+    signOut,
+    refreshSession
   };
 } 

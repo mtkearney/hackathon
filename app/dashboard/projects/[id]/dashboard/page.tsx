@@ -7,6 +7,7 @@ import Button from '@/components/ui/Button';
 import MermaidDiagram from '@/components/ui/MermaidDiagram';
 import MilestoneSidebar from '@/components/dashboard/MilestoneSidebar';
 import { fetchRepositoryTags, parseGitHubUrl, getTagBadgeUrl } from '@/lib/github/api';
+import { toast } from 'react-hot-toast';
 
 // Define types
 interface ProjectMilestone {
@@ -48,6 +49,8 @@ export default function ProjectDashboardPage() {
   const [repoInfo, setRepoInfo] = useState<{ owner: string; repo: string } | null>(null);
   const [mermaidDiagram, setMermaidDiagram] = useState<string>('');
   const [highlightedMilestoneId, setHighlightedMilestoneId] = useState<string | null>(null);
+  const [isGeneratingIssues, setIsGeneratingIssues] = useState(false);
+  const [githubIssues, setGithubIssues] = useState<any[]>([]);
   
   useEffect(() => {
     const projectId = params.id;
@@ -62,51 +65,41 @@ export default function ProjectDashboardPage() {
 
         if (error) throw error;
 
-        // Mock milestones data for now (would come from the database in a real app)
-        const mockMilestones: ProjectMilestone[] = [
-          {
-            id: '1',
-            title: 'Project Setup',
-            description: 'Initialize project structure and dependencies',
-            dueDate: '2023-04-15',
-            completionPercentage: 100,
-            tags: ['setup', 'v1.0'],
-          },
-          {
-            id: '2',
-            title: 'Core Features Implementation',
-            description: 'Implement core features of the application',
-            dueDate: '2023-05-20',
-            completionPercentage: 75,
-            tags: ['feature', 'v1.0'],
-          },
-          {
-            id: '3',
-            title: 'Testing & Bug Fixes',
-            description: 'Comprehensive testing and bug fixes',
-            dueDate: '2023-06-10',
-            completionPercentage: 30,
-            tags: ['testing', 'v1.0'],
-          },
-          {
-            id: '4',
-            title: 'Documentation & Release',
-            description: 'Finalize documentation and prepare for release',
-            dueDate: '2023-06-30',
-            completionPercentage: 10,
-            tags: ['documentation', 'v1.0'],
-          },
-        ];
-
-        // Calculate overall completion percentage
-        const totalCompletion = mockMilestones.reduce((acc, milestone) => acc + milestone.completionPercentage, 0);
-        const overallCompletion = Math.round(totalCompletion / mockMilestones.length);
-        setCompletionPercentage(overallCompletion);
-
-        setProject({ ...data, milestones: mockMilestones });
-        
-        // Fetch GitHub tags once we have the project
-        fetchGitHubTags(data.name);
+        // Parse GitHub URL and set repo info
+        if (data.github_issues_url) {
+          const { owner, repo } = parseGitHubUrl(data.github_issues_url);
+          setRepoInfo({ owner, repo });
+          
+          // Fetch GitHub issues
+          try {
+            const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`);
+            const issues = await response.json();
+            setGithubIssues(issues);
+            
+            // Calculate completion based on actual issues
+            const closedIssues = issues.filter((issue: any) => issue.state === 'closed').length;
+            const totalIssues = issues.length;
+            const completion = totalIssues > 0 ? Math.round((closedIssues / totalIssues) * 100) : 0;
+            setCompletionPercentage(completion);
+            
+            // Create milestones from issues
+            const milestonesFromIssues = issues.map((issue: any) => ({
+              id: issue.number.toString(),
+              title: issue.title,
+              description: issue.body || 'No description provided',
+              dueDate: issue.milestone?.due_on || new Date().toISOString(),
+              completionPercentage: issue.state === 'closed' ? 100 : 30,
+              tags: issue.labels.map((label: any) => label.name),
+            }));
+            
+            setProject({ ...data, milestones: milestonesFromIssues });
+          } catch (err) {
+            console.error('Error fetching GitHub issues:', err);
+            setProject(data);
+          }
+        } else {
+          setProject(data);
+        }
       } catch (err: any) {
         setError(err.message || 'Failed to fetch project details');
       } finally {
@@ -281,6 +274,87 @@ export default function ProjectDashboardPage() {
     setHighlightedMilestoneId(null);
   };
 
+  // Function to generate GitHub issues from project data
+  const generateGitHubIssues = async () => {
+    if (!project) return;
+    
+    try {
+      setIsGeneratingIssues(true);
+      
+      const response = await fetch('/api/github/issues', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          projectId: project.id,
+          projectName: project.name,
+          projectConfig: project.config
+        }),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to generate GitHub issues');
+      }
+      
+      const data = await response.json();
+      
+      // Update the project state to reflect that issues have been generated
+      setProject({
+        ...project,
+        github_issues_generated: true
+      });
+      
+      // Update the repoInfo if not already set
+      if (!repoInfo && data.repoUrl) {
+        const parsed = parseGitHubUrl(data.repoUrl);
+        setRepoInfo(parsed);
+      }
+      
+      // Refresh GitHub issues
+      if (repoInfo) {
+        const issuesResponse = await fetch(`https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/issues`);
+        const issues = await issuesResponse.json();
+        setGithubIssues(issues);
+        
+        // Create milestones from issues
+        const milestonesFromIssues = issues.map((issue: any) => ({
+          id: issue.number.toString(),
+          title: issue.title,
+          description: issue.body || 'No description provided',
+          dueDate: issue.milestone?.due_on || new Date().toISOString(),
+          completionPercentage: issue.state === 'closed' ? 100 : 30,
+          tags: issue.labels.map((label: any) => label.name),
+        }));
+        
+        setProject({
+          ...project,
+          github_issues_generated: true,
+          milestones: milestonesFromIssues
+        });
+      }
+      
+      // Also update the project in the database
+      await createClient()
+        .from('projects')
+        .update({ github_issues_generated: true })
+        .eq('id', project.id);
+      
+      toast.success(`Successfully created GitHub issues!`);
+      
+      // Open GitHub repository in a new tab
+      if (data.repoUrl) {
+        window.open(data.repoUrl, '_blank');
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Error generating GitHub issues');
+      console.error('Error generating GitHub issues:', error);
+    } finally {
+      setIsGeneratingIssues(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="text-center py-12">
@@ -313,138 +387,165 @@ export default function ProjectDashboardPage() {
   }
 
   return (
-    <div>
-      {/* Header */}
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">{project.name} Dashboard</h1>
-          <div className="flex items-center mt-2">
-            <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mr-2">
-              <div 
-                className="bg-indigo-600 h-2.5 rounded-full" 
-                style={{ width: `${completionPercentage}%` }}
-              ></div>
+    <div className="flex flex-col h-screen">
+      <div className="bg-white shadow">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">
+                {project?.name || 'Project Dashboard'}
+              </h1>
+              <p className="mt-1 text-sm text-gray-500">
+                {project?.summary || 'Loading project details...'}
+              </p>
             </div>
-            <span className="text-sm font-medium text-gray-500">{completionPercentage}% Complete</span>
-          </div>
-          {repoInfo && (
-            <div className="mt-2 flex items-center">
-              <svg className="w-4 h-4 text-gray-500 mr-1" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
-              </svg>
-              <a 
-                href={`https://github.com/${repoInfo.owner}/${repoInfo.repo}`} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-sm text-indigo-600 hover:text-indigo-800"
+            <div className="flex space-x-3">
+              <Button
+                variant="outline"
+                onClick={() => router.push('/dashboard/projects')}
               >
-                {repoInfo.owner}/{repoInfo.repo}
-              </a>
+                Back to Projects
+              </Button>
+              
+              {/* Add the GitHub issues generation button here */}
+              <Button
+                variant="primary"
+                onClick={generateGitHubIssues}
+                disabled={isGeneratingIssues || !project || project.github_issues_generated}
+                className="flex items-center"
+              >
+                {isGeneratingIssues ? (
+                  <>
+                    <div className="w-4 h-4 mr-2 rounded-full border-2 border-white border-t-transparent animate-spin"></div>
+                    Generating...
+                  </>
+                ) : project?.github_issues_generated ? (
+                  <>
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                    Issues Generated
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+                    </svg>
+                    Generate GitHub Issues
+                  </>
+                )}
+              </Button>
             </div>
-          )}
-        </div>
-        <div className="flex space-x-3">
-          <Button variant="outline" onClick={() => router.push(`/dashboard/projects/${params.id}`)}>
-            Project Details
-          </Button>
-          <Button>Generate GitHub Issues</Button>
-        </div>
-      </div>
-
-      {/* GitHub Tags Filter */}
-      <div className="mb-6">
-        <h3 className="text-sm font-medium text-gray-700 mb-2">Filter by GitHub Tags</h3>
-        <div className="flex flex-wrap gap-2">
-          {selectedFilter && (
-            <button
-              onClick={() => handleFilterChange(null)}
-              className="px-3 py-1 bg-indigo-100 text-indigo-800 rounded-full text-sm font-medium hover:bg-indigo-200"
-            >
-              Clear Filter
-            </button>
-          )}
-          {githubTags.map(tag => (
-            <button
-              key={tag}
-              onClick={() => handleFilterChange(tag)}
-              className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
-                selectedFilter === tag 
-                  ? 'bg-indigo-600 text-white' 
-                  : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
-              }`}
-            >
-              {tag}
-              {selectedFilter !== tag && (
-                <span className="ml-1 text-xs text-gray-500">
-                  ({project.milestones?.filter(m => m.tags.includes(tag)).length || 0})
-                </span>
+          </div>
+          
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <div className="flex items-center mt-2">
+                <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mr-2">
+                  <div 
+                    className="bg-indigo-600 h-2.5 rounded-full" 
+                    style={{ width: `${completionPercentage}%` }}
+                  ></div>
+                </div>
+                <span className="text-sm font-medium text-gray-500">{completionPercentage}% Complete</span>
+              </div>
+              {repoInfo && (
+                <div className="mt-2 flex items-center">
+                  <svg className="w-4 h-4 text-gray-500 mr-1" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
+                  </svg>
+                  <a 
+                    href={`https://github.com/${repoInfo.owner}/${repoInfo.repo}`} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-sm text-indigo-600 hover:text-indigo-800"
+                  >
+                    {repoInfo.owner}/{repoInfo.repo}
+                  </a>
+                </div>
               )}
-            </button>
-          ))}
+            </div>
+          </div>
+
+          {/* GitHub Tags Filter */}
+          <div className="mb-6">
+            <h3 className="text-sm font-medium text-gray-700 mb-2">Filter by GitHub Tags</h3>
+            <div className="flex flex-wrap gap-2">
+              {selectedFilter && (
+                <button
+                  onClick={() => handleFilterChange(null)}
+                  className="px-3 py-1 bg-indigo-100 text-indigo-800 rounded-full text-sm font-medium hover:bg-indigo-200"
+                >
+                  Clear Filter
+                </button>
+              )}
+              {githubTags.map(tag => (
+                <button
+                  key={tag}
+                  onClick={() => handleFilterChange(tag)}
+                  className={`px-3 py-1 rounded-full text-sm font-medium flex items-center ${
+                    selectedFilter === tag 
+                      ? 'bg-indigo-600 text-white' 
+                      : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
+                  }`}
+                >
+                  {tag}
+                  {selectedFilter !== tag && (
+                    <span className="ml-1 text-xs text-gray-500">
+                      ({project.milestones?.filter(m => m.tags.includes(tag)).length || 0})
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Main Content - Two Panel Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Panel - Mermaid Diagram */}
-        <div className="lg:col-span-2 bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Project Visualization</h2>
-          <div className="overflow-auto" style={{ minHeight: '500px' }}>
-            {mermaidDiagram && (
-              <MermaidDiagram 
-                chart={mermaidDiagram} 
-                className="w-full h-full"
+      <div className="flex-1 overflow-hidden">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6 h-full">
+          {/* Left Panel - Mermaid Diagram */}
+          <div className="lg:col-span-2 bg-white rounded-lg shadow overflow-auto">
+            <div className="p-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Project Visualization</h2>
+              <div className="overflow-auto" style={{ minHeight: '500px' }}>
+                {mermaidDiagram && (
+                  <MermaidDiagram 
+                    chart={mermaidDiagram} 
+                    className="w-full h-full"
+                  />
+                )}
+              </div>
+              <div className="mt-4 flex flex-wrap gap-4 text-sm">
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-green-200 border border-green-500 rounded-full mr-1"></div>
+                  <span>Complete (≥80%)</span>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-yellow-200 border border-yellow-500 rounded-full mr-1"></div>
+                  <span>In Progress (40-79%)</span>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-red-200 border border-red-500 rounded-full mr-1"></div>
+                  <span>To Do (&lt;40%)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Panel - Milestones */}
+          <div className="lg:col-span-1 overflow-auto">
+            {project?.milestones && (
+              <MilestoneSidebar
+                milestones={project.milestones}
+                onMilestoneClick={handleMilestoneClick}
+                onFilterChange={(filter) => {
+                  setHighlightedMilestoneId(null);
+                }}
               />
             )}
           </div>
-          <div className="mt-4 flex items-center space-x-4 text-sm">
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-green-200 border border-green-500 rounded-full mr-1"></div>
-              <span>Complete (≥80%)</span>
-            </div>
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-yellow-200 border border-yellow-500 rounded-full mr-1"></div>
-              <span>In Progress (40-79%)</span>
-            </div>
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-red-200 border border-red-500 rounded-full mr-1"></div>
-              <span>To Do (&lt;40%)</span>
-            </div>
-          </div>
-          {highlightedMilestoneId && (
-            <div className="mt-2 py-2 px-3 bg-indigo-50 text-indigo-700 rounded-md flex items-center">
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <span>
-                Showing components related to milestone: 
-                <strong className="ml-1">
-                  {project.milestones?.find(m => m.id === highlightedMilestoneId)?.title}
-                </strong>
-                <button 
-                  className="ml-3 text-indigo-800 hover:text-indigo-900 underline text-sm"
-                  onClick={() => setHighlightedMilestoneId(null)}
-                >
-                  Clear
-                </button>
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* Right Panel - Milestones */}
-        <div className="lg:col-span-1">
-          {project.milestones && (
-            <MilestoneSidebar
-              milestones={project.milestones}
-              onMilestoneClick={handleMilestoneClick}
-              onFilterChange={(filter) => {
-                // This is for the milestone sidebar's internal filters
-                // Not directly connected to tag filters
-                setHighlightedMilestoneId(null);
-              }}
-            />
-          )}
         </div>
       </div>
     </div>

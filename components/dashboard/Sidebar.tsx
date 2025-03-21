@@ -9,7 +9,7 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: HomeIcon },
   { name: 'New Project', href: '/dashboard/new-project', icon: PlusIcon },
   { name: 'Projects', href: '/dashboard/projects', icon: DocumentTextIcon },
-  { name: 'Analytics', href: '/dashboard/analytics', icon: ChartBarIcon },
+  // { name: 'Analytics', href: '/dashboard/analytics', icon: ChartBarIcon },
 ];
 
 export default function Sidebar() {

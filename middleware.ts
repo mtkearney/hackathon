@@ -46,6 +46,7 @@ export async function middleware(req: NextRequest) {
   const isProtectedRoute = req.nextUrl.pathname.startsWith('/dashboard');
   const isAuthRoute = ['/login', '/signup'].includes(req.nextUrl.pathname);
 
+  // Enable route protection to enforce authentication
   // Redirect if not authenticated and trying to access protected route
   if (!session && isProtectedRoute) {
     const redirectUrl = new URL('/login', req.url);

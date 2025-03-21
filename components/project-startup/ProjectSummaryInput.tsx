@@ -25,6 +25,10 @@ export default function ProjectSummaryInput({ summary, onSummaryChange, onContin
       setError('Please provide a project summary before continuing.');
       return;
     }
+    
+    // Store the summary in localStorage for other components
+    localStorage.setItem('projectSummary', summary);
+    
     onContinue();
   };
 

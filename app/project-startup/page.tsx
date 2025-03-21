@@ -55,28 +55,13 @@ export default function ProjectStartupPage() {
   const [projectName, setProjectName] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [authChecked, setAuthChecked] = useState(false);
+  const [authChecked, setAuthChecked] = useState(true); // Set directly to true to skip auth checks
   
-  // Check authentication status and redirect if needed
+  // Authentication check disabled - we're allowing users without login
   useEffect(() => {
-    // Skip if still loading
-    if (authLoading) {
-      return;
-    }
-    
-    // If authentication check completed and user not logged in, redirect
-    if (!authLoading && !user && !authChecked) {
-      console.log('No user detected, redirecting to login');
-      setAuthChecked(true);
-      router.push('/login?redirectTo=/project-startup');
-    }
-    
-    // Mark auth as checked if we have a user
-    if (!authLoading && user && !authChecked) {
-      console.log('User authenticated:', user.id);
-      setAuthChecked(true);
-    }
-  }, [user, authLoading, authChecked, router]);
+    // Skip all authentication redirects
+    console.log('Authentication skipped for project startup page');
+  }, []);
   
   // Initialize project configuration state
   const [projectConfig, setProjectConfig] = useState<ProjectConfig>({
@@ -148,25 +133,7 @@ export default function ProjectStartupPage() {
 
   // Save project to database
   const saveProject = async () => {
-    // Check if auth is still loading
-    if (authLoading) {
-      setError('Authentication is still loading. Please try again in a moment.');
-      return;
-    }
-
-    if (!user) {
-      console.error('No authenticated user found');
-      
-      // Try to refresh the session in case it expired
-      const sessionRefreshed = await attemptSessionRefresh();
-      
-      if (!sessionRefreshed) {
-        setError('You must be logged in to create a project. Please log in and try again.');
-        // Redirect to login
-        router.push('/login?redirectTo=/project-startup');
-        return;
-      }
-    }
+    // Authentication check disabled
 
     if (!projectName.trim()) {
       setError('Please provide a project name.');
@@ -177,18 +144,28 @@ export default function ProjectStartupPage() {
     setError(null);
 
     try {
-      if (!user?.id) {
-        throw new Error('User ID is missing. Please log in again.');
-      }
+      // Use a default user ID since authentication is disabled
+      const userId = user?.id || '00000000-0000-0000-0000-000000000000';
       
-      console.log('Creating project with user ID:', user.id);
+      console.log('Creating project with user ID:', userId);
       // Use the helper function to create the project
       const result = await createProject({
         name: projectName,
         summary: projectConfig.summary,
-        userId: user.id,
+        userId: userId,
         projectConfig
       });
+
+      // Check if this is a local project (fallback from network error)
+      if ('local' in result && result.local) {
+        setError('Project saved locally due to network issues. It will sync when connectivity is restored.');
+        // Do not redirect immediately for local projects
+        setTimeout(() => {
+          // Redirect to dashboard instead of the specific project
+          router.push('/dashboard');
+        }, 3000);
+        return;
+      }
 
       // Redirect to the new project page
       router.push(`/dashboard/projects/${result.id}`);
@@ -197,8 +174,63 @@ export default function ProjectStartupPage() {
       
       // Handle specific authentication errors
       if (err.message?.includes('authentication') || err.message?.includes('log in') || err.message?.includes('JWT')) {
-        setError('Your session has expired. Please log in again.');
-        router.push('/login?redirectTo=/project-startup');
+        setError('There was an authentication error. Continuing without authentication.');
+        // Set longer timeout to show error before proceeding
+        setTimeout(() => {
+          setError(null);
+        }, 3000);
+      } else if (err.message?.includes('network') || err.message?.includes('connection')) {
+        // Handle network errors with specific message
+        setError('Network connection issue. Your project will be saved locally and synced when connection is restored.');
+        // Add local project to localStorage as fallback
+        try {
+          const localId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+          const localProjects = JSON.parse(localStorage.getItem('localProjects') || '[]');
+          localProjects.push({
+            id: localId,
+            name: projectName,
+            summary: projectConfig.summary,
+            user_id: user?.id || '00000000-0000-0000-0000-000000000000',
+            config: {
+              techStack: [
+                ...projectConfig.techStack.technologies.map(name => ({
+                  name,
+                  isDefault: projectConfig.techStack.default
+                })),
+                ...projectConfig.techStack.customTechnologies.map(name => ({
+                  name,
+                  isDefault: false
+                }))
+              ],
+              pages: projectConfig.appLayout.pages.map(page => ({
+                ...page,
+                isDefault: true
+              })),
+              schemaTables: projectConfig.schema.tables.map(table => ({
+                name: table.name,
+                description: '',
+                isDefault: true,
+                fields: table.fields.map(field => ({
+                  name: field.name,
+                  type: field.type,
+                  required: field.name === 'id'
+                }))
+              }))
+            },
+            created_at: new Date().toISOString(),
+            local: true,
+            pendingSync: true
+          });
+          localStorage.setItem('localProjects', JSON.stringify(localProjects));
+          
+          // Redirect to dashboard after a short delay
+          setTimeout(() => {
+            router.push('/dashboard');
+          }, 3000);
+        } catch (storageErr) {
+          console.error('Failed to store project locally:', storageErr);
+          setError('Failed to save project locally. Please try again or save your configuration manually.');
+        }
       } else {
         setError(err.message || 'Failed to save project. Please try again.');
       }
@@ -289,68 +321,19 @@ export default function ProjectStartupPage() {
     }
   };
 
-  // Check if we need to redirect or show a loading state
-  const shouldShowLoadingState = authLoading || (!user && !authChecked);
-  
-  // If loading has taken more than 5 seconds, show a message and option to go to login
-  const [showLoginOption, setShowLoginOption] = useState(false);
-  useEffect(() => {
-    if (shouldShowLoadingState) {
-      const timeout = setTimeout(() => {
-        setShowLoginOption(true);
-      }, 5000);
-      
-      return () => clearTimeout(timeout);
-    } else {
-      setShowLoginOption(false);
-    }
-  }, [shouldShowLoadingState]);
-
+  // Skip loading state - render the form immediately
   return (
     <div className="container mx-auto px-4 py-8">
-      {shouldShowLoadingState ? (
-        <div className="flex flex-col items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500 mb-4"></div>
-          <span className="mb-4">Loading authentication...</span>
-          
-          {showLoginOption && (
-            <div className="text-center mt-4">
-              <p className="text-gray-600 mb-2">Loading is taking longer than expected.</p>
-              <Button 
-                variant="primary" 
-                onClick={() => router.push('/login?redirectTo=/project-startup')}
-              >
-                Go to Login
-              </Button>
-            </div>
-          )}
-        </div>
-      ) : authError ? (
-        <div className="text-center p-8">
-          <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-md mb-4">
-            Authentication error: {authError.message || 'Failed to authenticate'}
-          </div>
-          <Button 
-            variant="primary" 
-            onClick={() => router.push('/login?redirectTo=/project-startup')}
-          >
-            Go to Login
-          </Button>
-        </div>
-      ) : (
-        <>
-          <div className="flex justify-between items-center mb-6">
-            <h1 className="text-3xl font-bold">Project Startup</h1>
-            <Button 
-              variant="outline" 
-              onClick={() => router.push('/dashboard')}
-            >
-              Back to Dashboard
-            </Button>
-          </div>
-          {renderCurrentStep()}
-        </>
-      )}
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold">Project Startup</h1>
+        <Button 
+          variant="outline" 
+          onClick={() => router.push('/dashboard')}
+        >
+          Back to Dashboard
+        </Button>
+      </div>
+      {renderCurrentStep()}
     </div>
   );
 }
